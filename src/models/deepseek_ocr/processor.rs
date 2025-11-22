@@ -71,7 +71,7 @@ impl DeepseekOCRProcessor {
         let mut tokenized_id = vec![0u32];
         let mut images_spatial_crop = Vec::new();
         for (text_seq, image) in text_splits.iter().zip(imgs) {
-            if text_seq.len() > 0 {
+            if !text_seq.is_empty() {
                 let token_ids = tokenizer.text_encode_vec(text_seq.to_string(), false)?;
                 tokenized_id.extend_from_slice(&token_ids);
                 let seq_mask = vec![0u32; token_ids.len()];
@@ -143,8 +143,8 @@ impl DeepseekOCRProcessor {
         let seq_mask = vec![0u32; token_ids.len()];
         images_seq_mask.extend_from_slice(&seq_mask);
         let input_ids = Tensor::new(tokenized_id, &self.device)?.unsqueeze(0)?;
-        let image_seq_mask = Tensor::new(images_seq_mask, &self.device)?;
-        let (images_ori, images_spatial_crop_t, image_crop) = if images_list.len() == 0 {
+        let image_seq_mask = Tensor::new(images_seq_mask, &self.device)?.unsqueeze(0)?;
+        let (images_ori, images_spatial_crop_t, image_crop) = if images_list.is_empty() {
             let images_ori = Tensor::zeros(
                 (1usize, 3usize, image_size as usize, image_size as usize),
                 self.dtype,
@@ -160,7 +160,7 @@ impl DeepseekOCRProcessor {
         } else {
             let images_ori = Tensor::stack(&images_list, 0)?;
             let images_spatial_crop_t = Tensor::new(images_spatial_crop, &self.device)?;
-            let image_crop = if images_crop_list.len() > 0 {
+            let image_crop = if !images_crop_list.is_empty() {
                 Tensor::stack(&images_crop_list, 0)?
             } else {
                 Tensor::zeros(

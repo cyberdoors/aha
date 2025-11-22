@@ -1,6 +1,6 @@
-use anyhow::{Ok, Result, anyhow};
+use anyhow::{Result, anyhow};
 use candle_core::{D, DType, Device, IndexOp, Tensor, shape::Dim};
-use rocket::figment::value;
+use candle_nn::ops::sigmoid;
 
 pub fn prepare_causal_attention_mask(
     b_size: usize,
@@ -15,8 +15,11 @@ pub fn prepare_causal_attention_mask(
     // let mask = Tensor::from_vec(mask, (tgt_len, tgt_len), device)?;
     let arange = Tensor::arange(0u32, tgt_len as u32, device)?;
     let arange = arange.unsqueeze(1)?.broadcast_as((tgt_len, tgt_len))?;
-    let upper_triangle = arange.t()?.lt(&arange)?.to_dtype(DType::F32)?;
-    let mask = upper_triangle.where_cond(&Tensor::new(f32::NEG_INFINITY, device)?, &Tensor::new(0f32, device)?)?;
+    let upper_triangle = arange.t()?.gt(&arange)?;
+    let mask = upper_triangle.where_cond(
+        &Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(arange.shape())?,
+        &Tensor::new(0f32, device)?.broadcast_as(arange.shape())?,
+    )?;
     let mask = if seqlen_offset > 0 {
         let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, device)?;
         Tensor::cat(&[&mask0, &mask], D::Minus1)?
@@ -352,51 +355,62 @@ pub fn mask_index_add(original: &Tensor, mask: &Tensor, add: &Tensor) -> Result<
     Ok(xs)
 }
 
-pub fn interpolate_linear(
+pub fn compute_1d_coords(
+    input_size: usize,
+    output_size: usize,
+    align_corner: Option<bool>,
+) -> Result<Vec<f32>> {
+    if input_size == 1 {
+        Ok(vec![0f32; output_size])
+    } else if let Some(align_) = align_corner
+        && align_
+    {
+        Ok((0..output_size)
+            .map(|i| i as f32 * (input_size - 1) as f32 / (output_size - 1) as f32)
+            .collect())
+    } else {
+        Ok((0..output_size)
+            .map(|i| {
+                (i as f32 + 0.5) * (input_size as f32 / output_size as f32) - 0.5
+                // coord.max(0.0).min((input_size - 1) as f32)
+            })
+            .collect())
+    }
+}
+
+pub fn interpolate_linear_1d(
     t: &Tensor,
     target_size: usize,
     align_corner: Option<bool>,
 ) -> Result<Tensor> {
     // t: [b, channels, features]
+    if t.rank() < 3 {
+        return Err(anyhow::anyhow!(
+            "Input rank must have at least 3 dimensions"
+        ));
+    }
     let shape = t.dims();
     let orig_size = shape[shape.len() - 1];
     if orig_size == target_size {
         return Ok(t.clone());
     }
     let mut reshaped = t.clone();
-    if shape.len() != 3 {
+    if shape.len() > 3 {
         let bs = shape[0];
         let channels = shape[1..shape.len() - 1].iter().product::<usize>();
         reshaped = reshaped.reshape((bs, channels, orig_size))?;
     }
     let (bs, channels, _) = reshaped.dims3()?;
-    let mut output = Tensor::zeros((bs, channels, target_size), t.dtype(), &t.device())?;
-    let coords = if orig_size == 1 {
-        vec![0f32; target_size]
-    } else {
-        let coords_vec = if let Some(align_) = align_corner
-            && align_
-        {
-            (0..target_size)
-                .map(|i| i as f32 * (orig_size - 1) as f32 / (target_size - 1) as f32)
-                .collect()
-        } else {            
-            (0..target_size)
-                .map(|i| {
-                    let coord = (i as f32 + 0.5) * (orig_size as f32 / target_size as f32) - 0.5;
-                    coord.max(0.0).min((orig_size-1) as f32)
-                })
-                .collect()
-        };
-        coords_vec
-    };
+    let mut output = Tensor::zeros((bs, channels, target_size), t.dtype(), t.device())?;
+    let coords = compute_1d_coords(orig_size, target_size, align_corner)?;
 
     for b in 0..bs {
         for c in 0..channels {
             let input_slice = reshaped.i((b, c))?;
             let mut out_i = Vec::new();
-            for x_out in 0..target_size {
-                let coord = coords[x_out];
+            // for x_out in 0..target_size {
+            for &coord in coords.iter().take(target_size) {
+                let coord = if coord < 0.0 { 0.0 } else { coord };
                 let x0 = coord.floor() as usize;
                 let x1 = std::cmp::min(x0 + 1, orig_size - 1);
                 let weight = (coord - x0 as f32) as f64;
@@ -407,25 +421,268 @@ pub fn interpolate_linear(
                 out_i.push(interpolated);
             }
             let out_i = Tensor::stack(&out_i, 0)?.unsqueeze(0)?.unsqueeze(0)?;
-            output = output.slice_assign(&[(b..b+1), (c..c+1), (0..target_size)], &out_i)?;
+            output = output.slice_assign(&[(b..b + 1), (c..c + 1), (0..target_size)], &out_i)?;
         }
     }
     if shape.len() != 3 {
         let mut new_shape = shape.to_vec();
-        let last_dim = new_shape.len()-1;
+        let last_dim = new_shape.len() - 1;
         new_shape[last_dim] = target_size;
         output = output.reshape(new_shape)?
-
     }
     output = output.contiguous()?;
     Ok(output)
 }
 
+fn compute_scale(input_size: usize, output_size: usize, align_corners: bool) -> f64 {
+    if align_corners && output_size > 1 {
+        (input_size - 1) as f64 / (output_size - 1) as f64
+    } else {
+        input_size as f64 / output_size as f64
+    }
+}
+
+fn bicubic_filter(x: f64) -> f64 {
+    let a = -0.75;
+    let x = x.abs();
+    if x < 1.0 {
+        ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
+    } else if x < 2.0 {
+        (((x - 5.0) * x + 8.0) * x - 4.0) * a
+    } else {
+        0.0
+    }
+}
+
+pub fn interpolate_bicubic_antialias(
+    input: &Tensor,
+    batch_size: usize,
+    channels: usize,
+    input_height: usize,
+    input_width: usize,
+    output_height: usize,
+    output_width: usize,
+    height_scale: f64,
+    width_scale: f64,
+    align_corners: bool,
+) -> Result<Tensor> {
+    // tensor没有to_vec4, 所以把bs和channels先合在一起
+    let dim0 = batch_size * channels;
+    let input_3dim = input.reshape((dim0, input_height, input_width))?;
+    let input_data = input_3dim.to_dtype(DType::F32)?.to_vec3::<f32>()?;
+    let mut output_data = vec![vec![vec![0.0f32; output_width]; output_height]; dim0];
+    let support = 2.0 * height_scale.max(width_scale);
+    for c in 0..dim0 {
+        for out_y in 0..output_height {
+            let center_y = if align_corners {
+                out_y as f64 * height_scale
+            } else {
+                (out_y as f64 + 0.5) * height_scale - 0.5
+            };
+            let start_y = (center_y - support).ceil() as isize;
+            let end_y = (center_y + support).floor() as isize;
+            for out_x in 0..output_width {
+                let center_x = if align_corners {
+                    out_x as f64 * width_scale
+                } else {
+                    (out_x as f64 + 0.5) * width_scale - 0.5
+                };
+                let mut sum = 0.0;
+                let mut weight_sum = 0.0;
+                let start_x = (center_x - support).ceil() as isize;
+                let end_x = (center_x + support).floor() as isize;
+                for iy in start_y..end_y {
+                    for ix in start_x..end_x {
+                        if iy >= 0
+                            && iy < input_height as isize
+                            && ix >= 0
+                            && ix < input_width as isize
+                        {
+                            let dx = (ix as f64 - center_x).abs();
+                            let dy = (iy as f64 - center_y).abs();
+                            let wx = bicubic_filter(dx / width_scale.max(1.0));
+                            let wy = bicubic_filter(dy / height_scale.max(1.0));
+                            let weight = (wx * wy) as f32;
+                            sum += input_data[c][iy as usize][ix as usize] * weight;
+                            weight_sum += weight;
+                        }
+                    }
+                }
+                if weight_sum > 0.0 {
+                    output_data[c][out_y][out_x] = sum / weight_sum;
+                } else {
+                    output_data[c][out_y][out_x] = 0.0;
+                }
+            }
+        }
+    }
+    let output = Tensor::new(output_data, input.device())?
+        .reshape((batch_size, channels, output_height, output_width))?
+        .to_dtype(input.dtype())?;
+    Ok(output)
+}
+
+fn get_cubic_coefficients(t: f64) -> [f64; 4] {
+    let a = -0.75;
+
+    let x1 = t;
+    let coeff0 = cubic_convolution2(x1 + 1.0, a);
+    let coeff1 = cubic_convolution1(x1, a);
+
+    let x2 = 1.0 - t;
+    let coeff2 = cubic_convolution1(x2, a);
+    let coeff3 = cubic_convolution2(x2 + 1.0, a);
+
+    [coeff0, coeff1, coeff2, coeff3]
+}
+
+// 三次卷积函数1
+fn cubic_convolution1(x: f64, a: f64) -> f64 {
+    ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
+}
+
+// 三次卷积函数2
+fn cubic_convolution2(x: f64, a: f64) -> f64 {
+    ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
+}
+
+fn cubic_interp1d(x0: f32, x1: f32, x2: f32, x3: f32, t: f64) -> f32 {
+    let coeffs = get_cubic_coefficients(t);
+    x0 * coeffs[0] as f32 + x1 * coeffs[1] as f32 + x2 * coeffs[2] as f32 + x3 * coeffs[3] as f32
+}
+
+pub fn interpolate_bicubic_standard(
+    input: &Tensor,
+    batch_size: usize,
+    channels: usize,
+    input_height: usize,
+    input_width: usize,
+    output_height: usize,
+    output_width: usize,
+    height_scale: f64,
+    width_scale: f64,
+    align_corners: bool,
+) -> Result<Tensor> {
+    // tensor没有to_vec4, 所以把bs和channels先合在一起
+    let dim0 = batch_size * channels;
+    let input_3dim = input.reshape((dim0, input_height, input_width))?;
+    let input_data = input_3dim.to_dtype(DType::F32)?.to_vec3::<f32>()?;
+    let mut output_data = vec![vec![vec![0.0f32; output_width]; output_height]; dim0];
+    for c in 0..dim0 {
+        for out_y in 0..output_height {
+            let center_y = if align_corners {
+                out_y as f64 * height_scale
+            } else {
+                (out_y as f64 + 0.5) * height_scale - 0.5
+            };
+            let in_y = center_y.floor() as isize;
+            let t_y = center_y - in_y as f64;
+            for out_x in 0..output_width {
+                let center_x = if align_corners {
+                    out_x as f64 * width_scale
+                } else {
+                    (out_x as f64 + 0.5) * width_scale - 0.5
+                };
+                let in_x = center_x.floor() as isize;
+                let t_x = center_x - in_x as f64;
+                let mut coefficients = [0.0; 4];
+                // for k in 0..4 {
+                for (k, coefficients_k) in coefficients.iter_mut().enumerate() {
+                    let row = (in_y - 1 + k as isize)
+                        .max(0)
+                        .min(input_height as isize - 1) as usize;
+                    let x_minus_1 = input_data[c][row]
+                        [(in_x - 1).max(0).min(input_width as isize - 1) as usize];
+                    let x_plus_0 =
+                        input_data[c][row][in_x.max(0).min(input_width as isize - 1) as usize];
+                    let x_plus_1 = input_data[c][row]
+                        [(in_x + 1).max(0).min(input_width as isize - 1) as usize];
+                    let x_plus_2 = input_data[c][row]
+                        [(in_x + 2).max(0).min(input_width as isize - 1) as usize];
+
+                    // coefficients[k] = cubic_interp1d(x_minus_1, x_plus_0, x_plus_1, x_plus_2, t_x);
+                    *coefficients_k = cubic_interp1d(x_minus_1, x_plus_0, x_plus_1, x_plus_2, t_x);
+                }
+                output_data[c][out_y][out_x] = cubic_interp1d(
+                    coefficients[0],
+                    coefficients[1],
+                    coefficients[2],
+                    coefficients[3],
+                    t_y,
+                );
+            }
+        }
+    }
+    let output = Tensor::new(output_data, input.device())?
+        .reshape((batch_size, channels, output_height, output_width))?
+        .to_dtype(input.dtype())?;
+    Ok(output)
+}
+
+pub fn interpolate_bicubic(
+    input: &Tensor,
+    target_size: (usize, usize),
+    antialias: Option<bool>,
+    align_corner: Option<bool>,
+) -> Result<Tensor> {
+    if input.rank() != 4 {
+        return Err(anyhow::anyhow!(
+            "Input rank must have at least 3 dimensions"
+        ));
+    }
+    // if input.dim(0)? != 1 {
+    //     return Err(anyhow::anyhow!("Input batch_size must be 1"));
+    // }
+    let (batch_size, channels, input_height, input_width) = input.dims4()?;
+    let (output_height, output_width) = target_size;
+    if output_height == input_height && output_width == input_width {
+        return Ok(input.clone());
+    }
+    let align_corners = match align_corner {
+        Some(true) => true,
+        Some(false) => false,
+        None => false,
+    };
+    let height_scale = compute_scale(input_height, output_height, align_corners);
+    let width_scale = compute_scale(input_width, output_width, align_corners);
+    // let input_squeeze = input.squeeze(0)?;
+    let output = if let Some(antialias_) = antialias
+        && antialias_
+        && (input_height > output_height || input_width > output_width)
+    {
+        interpolate_bicubic_antialias(
+            input,
+            batch_size,
+            channels,
+            input_height,
+            input_width,
+            output_height,
+            output_width,
+            height_scale,
+            width_scale,
+            align_corners,
+        )?
+    } else {
+        interpolate_bicubic_standard(
+            input,
+            batch_size,
+            channels,
+            input_height,
+            input_width,
+            output_height,
+            output_width,
+            height_scale,
+            width_scale,
+            align_corners,
+        )?
+    };
+    let output = output.to_dtype(input.dtype())?.to_device(input.device())?;
+    Ok(output)
+}
+
 pub fn index_select_2d(t: &Tensor, index: &Tensor) -> Result<Tensor> {
     if t.rank() != 2 && index.rank() != 2 {
-        return Err(anyhow::anyhow!(
-                    "t and index rank must be equal to 2"
-                ));
+        return Err(anyhow::anyhow!("t and index rank must be equal to 2"));
     }
     let mut res_vec = Vec::new();
     let index_dim0 = index.dim(0)?;
@@ -433,7 +690,51 @@ pub fn index_select_2d(t: &Tensor, index: &Tensor) -> Result<Tensor> {
         let index_i = index.i(i)?;
         let rel_i = t.index_select(&index_i, 0)?;
         res_vec.push(rel_i);
-    } 
+    }
     let res = Tensor::stack(&res_vec, 0)?;
     Ok(res)
+}
+
+pub fn quick_gelu(xs: &Tensor) -> Result<Tensor> {
+    let x = xs.affine(1.702, 0.0)?;
+    let x = sigmoid(&x)?;
+    Ok(xs.mul(&x)?)
+}
+
+pub fn topk(weight: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
+    let topk_idx = weight
+        .arg_sort_last_dim(false)?
+        .narrow(D::Minus1, 0, topk)?
+        .contiguous()?;
+    let topk_weight = weight.gather(&topk_idx, D::Minus1)?;
+    Ok((topk_weight, topk_idx))
+}
+
+pub fn onehot(input: &Tensor, len: usize) -> Result<Tensor> {
+    let mut shape = input.dims().to_vec();
+    shape.push(len);
+    let expand_input = input.unsqueeze(D::Minus1)?.broadcast_as(shape)?;
+    let range =
+        Tensor::arange(0u32, len as u32, input.device())?.broadcast_as(expand_input.dims())?;
+    let onehot = expand_input.eq(&range)?;
+    Ok(onehot)
+}
+
+pub fn nonzero(input: &Tensor) -> Result<(Vec<u32>, Vec<u32>)> {
+    assert!(input.rank() == 2, "input rank must be 2!");
+    let mut topk_ids = Vec::new();
+    let mut token_ids_all = Vec::new();
+    let topk = input.dim(0)?;
+    let input_vec = input.to_vec2::<u32>()?;
+    for (i, vec) in input_vec.iter().enumerate().take(topk) {
+        let token_ids: Vec<u32> = vec
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &val)| if val > 0 { Some(idx as u32) } else { None })
+            .collect();
+        let token_len = token_ids.len();
+        topk_ids.extend_from_slice(&vec![i as u32; token_len]);
+        token_ids_all.extend_from_slice(&token_ids);
+    }
+    Ok((topk_ids, token_ids_all))
 }

@@ -1,15 +1,26 @@
-
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct DeepseekV2Config {
     pub bos_token_id: u32,
     pub eos_token_id: u32,
-    pub first_k_dense_replace: u32,
+    pub first_k_dense_replace: usize,
     pub hidden_size: usize,
     pub intermediate_size: usize,
     pub kv_lora_rank: Option<usize>,
     pub lm_head: bool,
     pub max_position_embeddings: usize,
     pub moe_intermediate_size: usize,
+    #[serde(default = "default_moe_layer_freq")]
+    pub moe_layer_freq: usize,
+    #[serde(default = "default_routed_scaling_factor")]
+    pub routed_scaling_factor: f64,
+    #[serde(default = "default_scoring_func")]
+    pub scoring_func: String,
+    #[serde(default = "default_aux_loss_alpha")]
+    pub aux_loss_alpha: f32,
+    #[serde(default = "default_true")]
+    pub seq_aux: bool,
+    #[serde(default = "default_false")]
+    pub norm_topk_prob: bool,
     pub n_group: usize,
     pub n_routed_experts: usize,
     pub n_shared_experts: usize,
@@ -27,6 +38,30 @@ pub struct DeepseekV2Config {
     pub use_mla: bool,
     pub v_head_dim: usize,
     pub vocab_size: usize,
+    #[serde(default = "default_rms_norm_eps")]
+    pub rms_norm_eps: f64,
+}
+
+fn default_moe_layer_freq() -> usize {
+    1
+}
+fn default_routed_scaling_factor() -> f64 {
+    1.0
+}
+fn default_scoring_func() -> String {
+    "softmax".to_string()
+}
+fn default_aux_loss_alpha() -> f32 {
+    0.001
+}
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_rms_norm_eps() -> f64 {
+    1e-6
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -43,13 +78,13 @@ pub struct ClipL14_224 {
     pub image_size: usize,
     pub layers: usize,
     pub patch_size: usize,
-    pub width: usize
+    pub width: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct SamVitB {
     pub downsample_channels: Vec<usize>,
-    pub global_attn_indexes: Vec<u32>,
+    pub global_attn_indexes: Vec<usize>,
     pub heads: usize,
     pub layers: usize,
     pub width: usize,
@@ -66,7 +101,7 @@ pub struct Width {
 pub struct DeepseekOCRVisionConfig {
     pub image_size: usize,
     pub mlp_ratio: f32,
-    pub width: Width
+    pub width: Width,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]

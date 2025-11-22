@@ -286,6 +286,9 @@ pub fn eager_attention_forward(
         Some(g) => repeat_kv(value_states.clone(), g)?.contiguous()?,
         None => value_states.clone(),
     };
+    let query_states = query_states.contiguous()?;
+    let key_states = key_states.contiguous()?;
+    let value_states = value_states.contiguous()?;
     let attn_output = {
         #[cfg(not(feature = "flash-attn"))]
         {

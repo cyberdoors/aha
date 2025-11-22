@@ -31,3 +31,6 @@ hound = "3.5.1"
 [features]
 flash-attn=["candle-flash-attn"]
 cuda=["candle-nn/cuda", "candle-core/cuda", "candle-transformers/cuda"]
+
+[lints.clippy]
+needless_range_loop = "allow"

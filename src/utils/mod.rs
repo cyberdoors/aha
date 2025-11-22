@@ -5,7 +5,9 @@ pub mod video_utils;
 
 use aha_openai_dive::v1::resources::{
     chat::{
-        ChatCompletionChoice, ChatCompletionChunkChoice, ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse, ChatMessage, ChatMessageContent, ChatMessageContentPart, DeltaChatMessage, DeltaFunction, DeltaToolCall, Function, ToolCall
+        ChatCompletionChoice, ChatCompletionChunkChoice, ChatCompletionChunkResponse,
+        ChatCompletionParameters, ChatCompletionResponse, ChatMessage, ChatMessageContent,
+        ChatMessageContentPart, DeltaChatMessage, DeltaFunction, DeltaToolCall, Function, ToolCall,
     },
     shared::FinishReason,
 };

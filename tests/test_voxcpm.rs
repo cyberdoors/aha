@@ -8,7 +8,7 @@ use anyhow::{Ok, Result};
 
 #[test]
 fn voxcpm_generate() -> Result<()> {
-    // RUST_BACKTRACE=1 cargo test -F cuda,flash-attn voxcpm_generate -- --nocapture
+    // RUST_BACKTRACE=1 cargo test -F cuda,flash-attn voxcpm_generate -r -- --nocapture
     let model_path = "/home/jhq/huggingface_model/openbmb/VoxCPM-0.5B/";
 
     let i_start = Instant::now();

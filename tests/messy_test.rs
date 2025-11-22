@@ -1,17 +1,22 @@
-use aha::utils::tensor_utils::{index_select_2d, interpolate_linear};
+use aha::utils::tensor_utils::interpolate_bicubic;
 use anyhow::Result;
-use candle_core::{IndexOp, Tensor};
+use candle_core::Tensor;
 
 #[test]
 fn messy_test() -> Result<()> {
-    // RUST_BACKTRACE=1 cargo test -F cuda messy_test -- --nocapture
+    // RUST_BACKTRACE=1 cargo test -F cuda messy_test -r -- --nocapture
     let device = &candle_core::Device::Cpu;
-    let t1 = Tensor::rand(0.0, 1.0, (1, 5, 5, 10), device)?;
-    let t2 = Tensor::rand(0.0, 1.0, (5, 8, 10), device)?;
-    let t2 = t2.t()?;
-    println!("t2: {:?}", t2);
-    let re = t1.broadcast_matmul(&t2)?;
-    println!("re: {:?}", re);
+    // let t = Tensor::randn(0.0f32, 1.0, (1, 768, 64, 64), device)?;
+    let t = Tensor::arange(0.0f32, 10.0, device)?.broadcast_as((1, 1, 10, 10))?;
+    println!("t: {}", t);
+    let t_resized = interpolate_bicubic(&t, (5, 5), Some(true), Some(false))?;
+    println!("t_resized: {}", t_resized);
+    // let t1 = Tensor::rand(0.0, 1.0, (1, 5, 5, 10), device)?;
+    // let t2 = Tensor::rand(0.0, 1.0, (5, 8, 10), device)?;
+    // let t2 = t2.t()?;
+    // println!("t2: {:?}", t2);
+    // let re = t1.broadcast_matmul(&t2)?;
+    // println!("re: {:?}", re);
     // let index = Tensor::arange(0u32, 10u32, device)?;
     // let index_2d_vec = vec![index;5];
     // let index_2d = Tensor::stack(&index_2d_vec, 0)?;

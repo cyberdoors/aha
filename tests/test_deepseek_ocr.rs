@@ -1,11 +1,13 @@
-use aha::models::deepseek_ocr::{generate::DeepseekOCRGenerateModel, processor::DeepseekOCRProcessor};
+use std::{pin::pin, time::Instant};
+
+use aha::models::{GenerateModel, deepseek_ocr::generate::DeepseekOCRGenerateModel};
 use aha_openai_dive::v1::resources::chat::ChatCompletionParameters;
 use anyhow::Result;
-use candle_core::{DType, Device, IndexOp, Tensor};
+use rocket::futures::StreamExt;
 
 #[test]
-fn deepseek_ocr_test() -> Result<()> {
-    // RUST_BACKTRACE=1 cargo test -F cuda deepseek_ocr_test -- --nocapture
+fn deepseek_ocr_generate() -> Result<()> {
+    // RUST_BACKTRACE=1 cargo test -F cuda deepseek_ocr_generate -r -- --nocapture
     let message = r#"
     {
         "model": "deepseek-ocr",
@@ -35,9 +37,60 @@ fn deepseek_ocr_test() -> Result<()> {
     "#;
     let model_path = "/home/jhq/huggingface_model/deepseek-ai/DeepSeek-OCR/";
     let mes: ChatCompletionParameters = serde_json::from_str(message)?;
-    let device = Device::cuda_if_available(0)?;
-    let dtype = DType::BF16;
-    let mut model = DeepseekOCRGenerateModel::init(model_path, Some(&device), Some(dtype))?;
+    let i_start = Instant::now();
+    let mut model = DeepseekOCRGenerateModel::init(model_path, None, None)?;
+    let i_duration = i_start.elapsed();
+    println!("Time elapsed in load model is: {:?}", i_duration);
+    let i_start = Instant::now();
     let res = model.generate(mes)?;
+    let i_duration = i_start.elapsed();
+    println!("Time elapsed in generate is: {:?}", i_duration);
+    println!("generate: \n {:?}", res);
+    Ok(())
+}
+
+#[tokio::test]
+async fn deepseek_ocr_stream() -> Result<()> {
+    // test with cuda: RUST_BACKTRACE=1 cargo test -F cuda deepseek_ocr_stream -r -- --nocapture
+
+    let message = r#"
+    {
+        "model": "deepseek-ocr",
+        "messages": [
+            {
+                "role": "user",
+                "content": [ 
+                    {
+                        "type": "image",
+                        "image_url": 
+                        {
+                            "url": "file://./assets/img/ocr_test1.png"
+                        }
+                    },              
+                    {
+                        "type": "text", 
+                        "text": "<image>\n<|grounding|>Convert the document to markdown. "
+                    }
+                ]
+            },
+            {
+                "role": "assistant",
+                "content": ""
+            }
+        ]
+    }
+    "#;
+    let model_path = "/home/jhq/huggingface_model/deepseek-ai/DeepSeek-OCR/";
+    let mes: ChatCompletionParameters = serde_json::from_str(message)?;
+    let i_start = Instant::now();
+    let mut model = DeepseekOCRGenerateModel::init(model_path, None, None)?;
+    let i_duration = i_start.elapsed();
+    println!("Time elapsed in load model is: {:?}", i_duration);
+    let mut stream = pin!(model.generate_stream(mes)?);
+    while let Some(item) = stream.next().await {
+        println!("generate: \n {:?}", item);
+    }
+    let i_duration = i_start.elapsed();
+    println!("Time elapsed in generate is: {:?}", i_duration);
     Ok(())
 }

@@ -272,3 +272,34 @@ impl Qwen3VLTextRotaryEmbedding {
         Ok((cos.to_dtype(dtype)?, sin.to_dtype(dtype)?))
     }
 }
+
+pub struct RoPE {
+    inv_freq: Tensor, // (1, dim / 2)
+}
+
+impl RoPE {
+    pub fn new(dim: usize, theta_base: f32, device: &Device) -> Result<Self> {
+        let inv_freq = compute_default_rope_parameters(dim, theta_base);
+        let inv_freq = Tensor::from_slice(&inv_freq, (1, inv_freq.len()), device)?;
+
+        Ok(Self { inv_freq })
+    }
+    pub fn forward(
+        &self,
+        seqlen_offset: usize,
+        seq_len: usize,
+        device: &Device,
+    ) -> Result<(Tensor, Tensor)> {
+        let positions = Tensor::arange(
+            seqlen_offset as f32,
+            (seqlen_offset + seq_len) as f32,
+            device,
+        )?
+        .reshape((seq_len, 1))?; // (seq_len, 1)
+        let freqs = positions.matmul(&self.inv_freq)?; // (seq_len, dim / 2)
+        let emb = Tensor::cat(&[&freqs, &freqs], D::Minus1)?.contiguous()?; // (seq_len, dim)
+        let cos = emb.cos()?;
+        let sin = emb.sin()?;
+        Ok((cos, sin))
+    }
+}

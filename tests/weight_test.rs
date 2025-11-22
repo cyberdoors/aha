@@ -61,3 +61,22 @@ fn qwen3vl_weight() -> Result<()> {
     println!("model_list: {:?}", model_list);
     Ok(())
 }
+
+#[test]
+fn deepseekocr_weight() -> Result<()> {
+    let model_path = "/home/jhq/huggingface_model/deepseek-ai/DeepSeek-OCR/";
+    let model_list = find_type_files(model_path, "safetensors")?;
+
+    let device = Device::Cpu;
+    for m in &model_list {
+        let weights = safetensors::load(m, &device)?;
+        for (key, tensor) in weights.iter() {
+            if key.contains("lm_head") {
+                println!("=== {} === {:?}", key, tensor.shape());
+            }
+            // println!("=== {} === {:?}", key, tensor.shape());
+        }
+    }
+    println!("model_list: {:?}", model_list);
+    Ok(())
+}

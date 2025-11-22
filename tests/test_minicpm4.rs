@@ -7,9 +7,9 @@ use rocket::futures::StreamExt;
 
 #[test]
 fn minicpm_generate() -> Result<()> {
-    // test with cpu :(太慢了, : RUST_BACKTRACE=1 cargo test minicpm_generate -- --nocapture
-    // test with cuda: RUST_BACKTRACE=1 cargo test -F cuda minicpm_generate -- --nocapture
-    // test with cuda+flash-attn: RUST_BACKTRACE=1 cargo test -F cuda,flash-attn minicpm_generate -- --nocapture
+    // test with cpu :(太慢了, : RUST_BACKTRACE=1 cargo test minicpm_generate -r -- --nocapture
+    // test with cuda: RUST_BACKTRACE=1 cargo test -F cuda minicpm_generate -r -- --nocapture
+    // test with cuda+flash-attn: RUST_BACKTRACE=1 cargo test -F cuda,flash-attn minicpm_generate -r -- --nocapture
 
     let model_path = "/home/jhq/huggingface_model/OpenBMB/MiniCPM4-0.5B/";
     let message = r#"
@@ -42,7 +42,7 @@ fn minicpm_generate() -> Result<()> {
 
 #[tokio::test]
 async fn minicpm_stream() -> Result<()> {
-    // test with cuda+flash-attn: RUST_BACKTRACE=1 cargo test -F cuda,flash-attn minicpm_stream -- --nocapture
+    // test with cuda+flash-attn: RUST_BACKTRACE=1 cargo test -F cuda,flash-attn minicpm_stream -r -- --nocapture
 
     let model_path = "/home/jhq/huggingface_model/OpenBMB/MiniCPM4-0.5B/";
 
