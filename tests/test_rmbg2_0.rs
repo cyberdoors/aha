@@ -37,11 +37,12 @@ fn rmbg2_0_generate() -> Result<()> {
 
     let i_start = Instant::now();
     let result = model.generate(mes)?;
+    let i_duration = i_start.elapsed();
+    println!("Time elapsed in generate is: {:?}", i_duration);
     for (i, img) in result.iter().enumerate() {
         let _ = img.save(format!("rmbg_{i}.png"));
     }
-    let i_duration = i_start.elapsed();
-    println!("Time elapsed in generate is: {:?}", i_duration);
+    
 
     Ok(())
 }
