@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::IpAddr, str::FromStr, time::Duration};
 
 use aha::{models::WhichModel, utils::get_default_save_dir};
 use clap::Parser;
@@ -16,6 +16,9 @@ mod api;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    #[arg(short, long, default_value = "127.0.0.1")]
+    address: String,
+
     #[arg(short, long, default_value_t = 10100)]
     port: u16,
 
@@ -67,7 +70,7 @@ async fn download_model(model_id: &str, save_dir: &str, max_retries: u32) -> any
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let model_id = match args.model {
+    let model_id = match &args.model {
         WhichModel::MiniCPM4_0_5B => "OpenBMB/MiniCPM4-0.5B",
         WhichModel::Qwen2_5vl3B => "Qwen/Qwen2.5-VL-3B-Instruct",
         WhichModel::Qwen2_5vl7B => "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -82,11 +85,11 @@ async fn main() -> anyhow::Result<()> {
         WhichModel::VoxCPM => "OpenBMB/VoxCPM-0.5B",
         WhichModel::VoxCPM1_5 => "OpenBMB/VoxCPM1.5",
     };
-    let model_path = match args.weight_path {
-        Some(path) => path,
+    let model_path = match &args.weight_path {
+        Some(path) => path.clone(),
         None => {
-            let save_dir = match args.save_dir {
-                Some(dir) => dir,
+            let save_dir = match &args.save_dir {
+                Some(dir) => dir.clone(),
                 None => get_default_save_dir().expect("Failed to get home directory"),
             };
             let max_retries = args.download_retries.unwrap_or(3);
@@ -96,14 +99,15 @@ async fn main() -> anyhow::Result<()> {
     };
     // println!("-------------------download path: {}", model_path);
     init(args.model, model_path)?;
-    start_http_server(args.port).await?;
+    start_http_server(&args).await?;
 
     Ok(())
 }
 
-pub async fn start_http_server(port: u16) -> anyhow::Result<()> {
+pub(crate) async fn start_http_server(args: &Args) -> anyhow::Result<()> {
     let mut builder = rocket::build().configure(Config {
-        port,
+        address: IpAddr::from_str(&args.address)?,
+        port: args.port,
         limits: Limits::default()
             .limit("string", ByteUnit::Mebibyte(5))
             .limit("json", ByteUnit::Mebibyte(5))
